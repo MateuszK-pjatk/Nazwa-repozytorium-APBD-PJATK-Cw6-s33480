@@ -60,4 +60,34 @@ public class AppointmentsController : ControllerBase
 
         return Ok(appointments);
     }
+    
+    
+    [HttpPost]
+    public async Task<IActionResult> AddAppointment(CreateAppointmentRequest request)
+    {
+        string connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+        using (var connection = new SqlConnection(connectionString))
+        {
+            var query = @"
+                INSERT INTO Appointments (IdPatient, IdDoctor, AppointmentDate, Status, Reason)
+                VALUES (@IdPatient, @IdDoctor, @AppointmentDate, @Status, @Reason);
+                SELECT SCOPE_IDENTITY();";
+
+            using (var command = new SqlCommand(query, connection))
+            {
+                command.Parameters.AddWithValue("@IdPatient", request.PatientId);
+                command.Parameters.AddWithValue("@IdDoctor", request.DoctorId);
+                command.Parameters.AddWithValue("@AppointmentDate", request.Date);
+                command.Parameters.AddWithValue("@Status", "Scheduled");
+                command.Parameters.AddWithValue("@Reason", request.Reason);
+
+                await connection.OpenAsync();
+                
+                var newId = await command.ExecuteScalarAsync();
+                
+                return Created($"/api/Appointments/{newId}", new { IdAppointment = newId });
+            }
+        }
+    }
 }

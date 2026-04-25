@@ -2,6 +2,7 @@
 
 public class AppointmentResponse
 {
+    public int IdAppointment { get; set; }
     public DateTime AppointmentDate { get; set; }
     public string Status { get; set; }
     public string PatientFirstName { get; set; }

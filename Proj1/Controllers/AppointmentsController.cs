@@ -69,6 +69,30 @@ public class AppointmentsController : ControllerBase
 
         using (var connection = new SqlConnection(connectionString))
         {
+            await connection.OpenAsync();
+            
+            var checkPatientQuery = "SELECT COUNT(1) FROM Patients WHERE IdPatient = @PatientId";
+            using (var checkPatientCmd = new SqlCommand(checkPatientQuery, connection))
+            {
+                checkPatientCmd.Parameters.AddWithValue("@PatientId", request.PatientId);
+                var patientExists = (int)await checkPatientCmd.ExecuteScalarAsync() > 0;
+                if (!patientExists)
+                {
+                    return NotFound($"Pacjent o ID {request.PatientId} nie istnieje w bazie.");
+                }
+            }
+            
+            var checkDoctorQuery = "SELECT COUNT(1) FROM Doctors WHERE IdDoctor = @DoctorId";
+            using (var checkDoctorCmd = new SqlCommand(checkDoctorQuery, connection))
+            {
+                checkDoctorCmd.Parameters.AddWithValue("@DoctorId", request.DoctorId);
+                var doctorExists = (int)await checkDoctorCmd.ExecuteScalarAsync() > 0;
+                if (!doctorExists)
+                {
+                    return NotFound($"Lekarz o ID {request.DoctorId} nie istnieje w bazie.");
+                }
+            }
+            
             var query = @"
                 INSERT INTO Appointments (IdPatient, IdDoctor, AppointmentDate, Status, Reason)
                 VALUES (@IdPatient, @IdDoctor, @AppointmentDate, @Status, @Reason);
@@ -79,17 +103,16 @@ public class AppointmentsController : ControllerBase
                 command.Parameters.AddWithValue("@IdPatient", request.PatientId);
                 command.Parameters.AddWithValue("@IdDoctor", request.DoctorId);
                 command.Parameters.AddWithValue("@AppointmentDate", request.Date);
-                command.Parameters.AddWithValue("@Status", "Scheduled");
+                command.Parameters.AddWithValue("@Status", "Scheduled"); 
                 command.Parameters.AddWithValue("@Reason", request.Reason);
 
-                await connection.OpenAsync();
-                
                 var newId = await command.ExecuteScalarAsync();
-                
                 return Created($"/api/Appointments/{newId}", new { IdAppointment = newId });
             }
         }
     }
+    
+    
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteAppointment(int id)
     {

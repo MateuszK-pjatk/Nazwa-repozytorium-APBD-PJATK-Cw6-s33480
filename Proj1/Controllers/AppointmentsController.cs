@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
+using System.Data;
 using Proj1.DTOs;
 
 namespace Proj1.Controllers;
@@ -8,135 +9,54 @@ namespace Proj1.Controllers;
 [ApiController]
 public class AppointmentsController : ControllerBase
 {
-    private readonly IConfiguration _configuration;
+    private readonly string _connectionString;
 
     public AppointmentsController(IConfiguration configuration)
     {
-        _configuration = configuration;
+        _connectionString = configuration.GetConnectionString("DefaultConnection") 
+                            ?? throw new InvalidOperationException("Connection string not found.");
     }
-
+    
     [HttpGet]
-    public async Task<IActionResult> GetAppointments(int? patientId)
+    public async Task<IActionResult> GetAppointments([FromQuery] string? status, [FromQuery] string? patientLastName)
     {
-        var appointments = new List<AppointmentResponse>();
-        string connectionString = _configuration.GetConnectionString("DefaultConnection");
+        var result = new List<AppointmentListDto>();
+        await using var connection = new SqlConnection(_connectionString);
+        
+        const string query = @"
+            SELECT
+                a.IdAppointment,
+                a.AppointmentDate,
+                a.Status,
+                a.Reason,
+                p.FirstName + N' ' + p.LastName AS PatientFullName,
+                p.Email AS PatientEmail
+            FROM dbo.Appointments a
+            JOIN dbo.Patients p ON p.IdPatient = a.IdPatient
+            WHERE (@Status IS NULL OR a.Status = @Status)
+              AND (@PatientLastName IS NULL OR p.LastName = @PatientLastName)
+            ORDER BY a.AppointmentDate;";
 
-        using (var connection = new SqlConnection(connectionString))
+        await using var command = new SqlCommand(query, connection);
+        command.Parameters.Add("@Status", SqlDbType.NVarChar).Value = (object?)status ?? DBNull.Value;
+        command.Parameters.Add("@PatientLastName", SqlDbType.NVarChar).Value = (object?)patientLastName ?? DBNull.Value;
+
+        await connection.OpenAsync();
+        await using var reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
         {
-            var query = @"
-                SELECT a.AppointmentDate, a.Status, 
-                       p.FirstName AS PatientFirstName, p.LastName AS PatientLastName, 
-                       d.FirstName AS DoctorFirstName, d.LastName AS DoctorLastName, 
-                       s.Name AS SpecializationName
-                FROM Appointments a
-                JOIN Patients p ON a.IdPatient = p.IdPatient
-                JOIN Doctors d ON a.IdDoctor = d.IdDoctor
-                JOIN Specializations s ON d.IdSpecialization = s.IdSpecialization
-                WHERE (@PatientId IS NULL OR a.IdPatient = @PatientId)";
-
-            using (var command = new SqlCommand(query, connection))
+            result.Add(new AppointmentListDto
             {
-                command.Parameters.AddWithValue("@PatientId", (object)patientId ?? DBNull.Value);
-                
-                await connection.OpenAsync();
-                using (var reader = await command.ExecuteReaderAsync())
-                {
-                    while (await reader.ReadAsync())
-                    {
-                        appointments.Add(new AppointmentResponse
-                        {
-                            AppointmentDate = reader.GetDateTime(0),
-                            Status = reader.GetString(1),
-                            PatientFirstName = reader.GetString(2),
-                            PatientLastName = reader.GetString(3),
-                            DoctorFirstName = reader.GetString(4),
-                            DoctorLastName = reader.GetString(5),
-                            SpecializationName = reader.GetString(6)
-                        });
-                    }
-                }
-            }
+                IdAppointment = reader.GetInt32("IdAppointment"),
+                AppointmentDate = reader.GetDateTime("AppointmentDate"),
+                Status = reader.GetString("Status"),
+                Reason = reader.GetString("Reason"),
+                PatientFullName = reader.GetString("PatientFullName"),
+                PatientEmail = reader.GetString("PatientEmail")
+            });
         }
 
-        return Ok(appointments);
-    }
-    
-    
-    [HttpPost]
-    public async Task<IActionResult> AddAppointment(CreateAppointmentRequest request)
-    {
-        string connectionString = _configuration.GetConnectionString("DefaultConnection");
-
-        using (var connection = new SqlConnection(connectionString))
-        {
-            await connection.OpenAsync();
-            
-            var checkPatientQuery = "SELECT COUNT(1) FROM Patients WHERE IdPatient = @PatientId";
-            using (var checkPatientCmd = new SqlCommand(checkPatientQuery, connection))
-            {
-                checkPatientCmd.Parameters.AddWithValue("@PatientId", request.PatientId);
-                var patientExists = (int)await checkPatientCmd.ExecuteScalarAsync() > 0;
-                if (!patientExists)
-                {
-                    return NotFound($"Pacjent o ID {request.PatientId} nie istnieje w bazie.");
-                }
-            }
-            
-            var checkDoctorQuery = "SELECT COUNT(1) FROM Doctors WHERE IdDoctor = @DoctorId";
-            using (var checkDoctorCmd = new SqlCommand(checkDoctorQuery, connection))
-            {
-                checkDoctorCmd.Parameters.AddWithValue("@DoctorId", request.DoctorId);
-                var doctorExists = (int)await checkDoctorCmd.ExecuteScalarAsync() > 0;
-                if (!doctorExists)
-                {
-                    return NotFound($"Lekarz o ID {request.DoctorId} nie istnieje w bazie.");
-                }
-            }
-            
-            var query = @"
-                INSERT INTO Appointments (IdPatient, IdDoctor, AppointmentDate, Status, Reason)
-                VALUES (@IdPatient, @IdDoctor, @AppointmentDate, @Status, @Reason);
-                SELECT SCOPE_IDENTITY();";
-
-            using (var command = new SqlCommand(query, connection))
-            {
-                command.Parameters.AddWithValue("@IdPatient", request.PatientId);
-                command.Parameters.AddWithValue("@IdDoctor", request.DoctorId);
-                command.Parameters.AddWithValue("@AppointmentDate", request.Date);
-                command.Parameters.AddWithValue("@Status", "Scheduled"); 
-                command.Parameters.AddWithValue("@Reason", request.Reason);
-
-                var newId = await command.ExecuteScalarAsync();
-                return Created($"/api/Appointments/{newId}", new { IdAppointment = newId });
-            }
-        }
-    }
-    
-    
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteAppointment(int id)
-    {
-        string connectionString = _configuration.GetConnectionString("DefaultConnection");
-
-        using (var connection = new SqlConnection(connectionString))
-        {
-            var query = "DELETE FROM Appointments WHERE IdAppointment = @Id";
-
-            using (var command = new SqlCommand(query, connection))
-            {
-                command.Parameters.AddWithValue("@Id", id);
-                
-                await connection.OpenAsync();
-                
-                int rowsAffected = await command.ExecuteNonQueryAsync();
-                
-                if (rowsAffected == 0)
-                {
-                    return NotFound($"Wizyta o ID {id} nie została znaleziona.");
-                }
-                
-                return NoContent(); 
-            }
-        }
+        return Ok(result);
     }
 }

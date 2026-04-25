@@ -168,4 +168,125 @@ public class AppointmentsController : ControllerBase
         
         return Created($"/api/appointments/{newId}", new { IdAppointment = newId });
     }
+    
+    
+    [HttpPut("{idAppointment}")]
+    public async Task<IActionResult> UpdateAppointment(int idAppointment, UpdateAppointmentRequestDto request)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        
+        const string getApptQuery = "SELECT AppointmentDate, Status FROM dbo.Appointments WHERE IdAppointment = @IdAppointment";
+        await using var getApptCmd = new SqlCommand(getApptQuery, connection);
+        getApptCmd.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+        
+        await using var reader = await getApptCmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            return NotFound(new ErrorResponseDto { Message = "Wizyta nie istnieje." });
+        }
+        
+        var currentStatus = reader.GetString("Status");
+        var currentDate = reader.GetDateTime("AppointmentDate");
+        await reader.CloseAsync();
+        
+        if (request.Status != "Scheduled" && request.Status != "Completed" && request.Status != "Cancelled")
+        {
+            return BadRequest(new ErrorResponseDto { Message = "Nieprawidłowy status wizyty." });
+        }
+        
+        if (currentStatus == "Completed" && currentDate != request.AppointmentDate)
+        {
+            return BadRequest(new ErrorResponseDto { Message = "Nie można zmienić terminu zakończonej wizyty." });
+        }
+        
+        const string checkPatientQuery = "SELECT IsActive FROM dbo.Patients WHERE IdPatient = @IdPatient";
+        await using var checkPatientCmd = new SqlCommand(checkPatientQuery, connection);
+        checkPatientCmd.Parameters.Add("@IdPatient", SqlDbType.Int).Value = request.IdPatient;
+        var patientActiveObj = await checkPatientCmd.ExecuteScalarAsync();
+
+        if (patientActiveObj == null)
+            return NotFound(new ErrorResponseDto { Message = "Podany pacjent nie istnieje." });
+        if (!(bool)patientActiveObj)
+            return BadRequest(new ErrorResponseDto { Message = "Podany pacjent jest nieaktywny." });
+        
+        const string checkDoctorQuery = "SELECT IsActive FROM dbo.Doctors WHERE IdDoctor = @IdDoctor";
+        await using var checkDoctorCmd = new SqlCommand(checkDoctorQuery, connection);
+        checkDoctorCmd.Parameters.Add("@IdDoctor", SqlDbType.Int).Value = request.IdDoctor;
+        var doctorActiveObj = await checkDoctorCmd.ExecuteScalarAsync();
+
+        if (doctorActiveObj == null)
+            return NotFound(new ErrorResponseDto { Message = "Podany lekarz nie istnieje." });
+        if (!(bool)doctorActiveObj)
+            return BadRequest(new ErrorResponseDto { Message = "Podany lekarz jest nieaktywny." });
+        
+        const string checkConflictQuery = @"
+            SELECT COUNT(1) FROM dbo.Appointments 
+            WHERE IdDoctor = @IdDoctor 
+              AND AppointmentDate = @AppointmentDate 
+              AND IdAppointment != @IdAppointment";
+        await using var checkConflictCmd = new SqlCommand(checkConflictQuery, connection);
+        checkConflictCmd.Parameters.Add("@IdDoctor", SqlDbType.Int).Value = request.IdDoctor;
+        checkConflictCmd.Parameters.Add("@AppointmentDate", SqlDbType.DateTime2).Value = request.AppointmentDate;
+        checkConflictCmd.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+
+        if (Convert.ToInt32(await checkConflictCmd.ExecuteScalarAsync()) > 0)
+        {
+            return Conflict(new ErrorResponseDto { Message = "Lekarz ma już zaplanowaną wizytę w tym terminie." });
+        }
+        
+        const string updateQuery = @"
+            UPDATE dbo.Appointments
+            SET IdPatient = @IdPatient,
+                IdDoctor = @IdDoctor,
+                AppointmentDate = @AppointmentDate,
+                Status = @Status,
+                Reason = @Reason,
+                InternalNotes = @InternalNotes
+            WHERE IdAppointment = @IdAppointment";
+            
+        await using var updateCmd = new SqlCommand(updateQuery, connection);
+        updateCmd.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+        updateCmd.Parameters.Add("@IdPatient", SqlDbType.Int).Value = request.IdPatient;
+        updateCmd.Parameters.Add("@IdDoctor", SqlDbType.Int).Value = request.IdDoctor;
+        updateCmd.Parameters.Add("@AppointmentDate", SqlDbType.DateTime2).Value = request.AppointmentDate;
+        updateCmd.Parameters.Add("@Status", SqlDbType.NVarChar).Value = request.Status;
+        updateCmd.Parameters.Add("@Reason", SqlDbType.NVarChar).Value = request.Reason;
+        updateCmd.Parameters.Add("@InternalNotes", SqlDbType.NVarChar).Value = (object?)request.InternalNotes ?? DBNull.Value;
+
+        await updateCmd.ExecuteNonQueryAsync();
+
+        return Ok();
+    }
+    
+    
+    [HttpDelete("{idAppointment}")]
+    public async Task<IActionResult> DeleteAppointment(int idAppointment)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        
+        const string checkQuery = "SELECT Status FROM dbo.Appointments WHERE IdAppointment = @IdAppointment";
+        await using var checkCmd = new SqlCommand(checkQuery, connection);
+        checkCmd.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+        
+        var statusObj = await checkCmd.ExecuteScalarAsync();
+        if (statusObj == null)
+        {
+            return NotFound(new ErrorResponseDto { Message = "Wizyta nie została znaleziona." });
+        }
+
+        if (statusObj.ToString() == "Completed")
+        {
+            return Conflict(new ErrorResponseDto { Message = "Nie można usunąć zakończonej wizyty." });
+        }
+        
+        const string deleteQuery = "DELETE FROM dbo.Appointments WHERE IdAppointment = @IdAppointment";
+        await using var deleteCmd = new SqlCommand(deleteQuery, connection);
+        deleteCmd.Parameters.Add("@IdAppointment", SqlDbType.Int).Value = idAppointment;
+        
+        await deleteCmd.ExecuteNonQueryAsync();
+
+        return NoContent();
+    }
 }

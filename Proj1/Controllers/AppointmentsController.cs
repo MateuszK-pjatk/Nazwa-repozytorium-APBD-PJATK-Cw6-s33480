@@ -90,4 +90,30 @@ public class AppointmentsController : ControllerBase
             }
         }
     }
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteAppointment(int id)
+    {
+        string connectionString = _configuration.GetConnectionString("DefaultConnection");
+
+        using (var connection = new SqlConnection(connectionString))
+        {
+            var query = "DELETE FROM Appointments WHERE IdAppointment = @Id";
+
+            using (var command = new SqlCommand(query, connection))
+            {
+                command.Parameters.AddWithValue("@Id", id);
+                
+                await connection.OpenAsync();
+                
+                int rowsAffected = await command.ExecuteNonQueryAsync();
+                
+                if (rowsAffected == 0)
+                {
+                    return NotFound($"Wizyta o ID {id} nie została znaleziona.");
+                }
+                
+                return NoContent(); 
+            }
+        }
+    }
 }
